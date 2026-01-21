@@ -1,0 +1,121 @@
+
+from ultralytics import YOLO
+import cv2
+import numpy as np
+
+# ------------------------------------------
+# Load YOLOv8 SEGMENTATION model
+# ------------------------------------------
+model_path = r"P:\Optics R&D\Projects\Soprano\hair detection soprano scanner\Hairy-master\hair_segmentation\follicle_seg_model\weights\best.pt"
+model = YOLO(model_path)
+
+print("YOLO task:", model.task)  # should be 'segment'
+
+# ------------------------------------------
+# Open USB Camera
+# ------------------------------------------
+cap = cv2.VideoCapture(3)   # <-- adjust index if needed
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+
+if not cap.isOpened():
+    raise RuntimeError("❌ Could not open USB camera")
+
+print("📷 Camera initialized. Press Q to quit.")
+
+# ------------------------------------------
+# Live loop
+# ------------------------------------------
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        print("❌ Failed to capture frame")
+        break
+
+    # ------------------------------------------
+    # YOLO inference
+    # ------------------------------------------
+    results = model.predict(
+        source=frame,
+        conf=0.3,
+        retina_masks=True,
+        verbose=False
+    )
+
+    r = results[0]
+
+    # ------------------------------------------
+    # Start from raw frame (NO r.plot())
+    # ------------------------------------------
+    vis = frame.copy()
+
+    # ------------------------------------------
+    # Hair count + clean boxes
+    # ------------------------------------------
+    hair_count = 0
+
+    # ---------- MASK OVERLAY SECTION ----------
+    if r.masks is not None:
+        masks = r.masks.data.cpu().numpy()  # (N, Hm, Wm)
+        hair_count = masks.shape[0]
+
+        overlay_color = (0, 255, 255)   # BGR teal
+        alpha = 0.45
+
+        # Create overlay image
+        overlay = vis.copy()
+
+        for m in masks:
+            # Resize mask to frame size if needed
+            m_resized = cv2.resize(m, (vis.shape[1], vis.shape[0]), interpolation=cv2.INTER_LINEAR)
+
+            # Binary mask
+            m_bin = (m_resized > 0.3).astype(np.uint8)
+
+            # Apply color to overlay
+            overlay[m_bin == 1] = overlay_color
+
+        # Blend overlay with the image
+        vis = cv2.addWeighted(overlay, alpha, vis, 1 - alpha, 0)
+
+    # ---------- DRAW BOXES ----------
+    if r.boxes is not None:
+        for box in r.boxes:
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            conf = float(box.conf[0])
+
+            cv2.rectangle(vis, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.putText(vis, f"hair {conf:.2f}", (x1, y1 - 5),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+    # ------------------------------------------
+    # Draw hair count
+    # ------------------------------------------
+    cv2.putText(vis,
+                f"Hair count: {hair_count}",
+                (20, 40),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1.0,
+                (50, 200, 255),
+                3)
+
+    # ------------------------------------------
+    # Fit to 1080p FullHD screen
+    # ------------------------------------------
+    cv2.namedWindow("YOLO Segmentation", cv2.WINDOW_NORMAL)
+
+    screen_w, screen_h = 1920, 1080
+    H, W = vis.shape[:2]
+    scale = min(screen_w / W, screen_h / H)
+    vis_small = cv2.resize(vis, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+
+    cv2.imshow("YOLO Segmentation", vis_small)
+
+    if cv2.waitKey(1) & 0xFF == ord("q"):
+        break
+
+# ------------------------------------------
+# Cleanup
+# ------------------------------------------
+cap.release()
+cv2.destroyAllWindows()
